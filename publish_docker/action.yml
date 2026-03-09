@@ -1,0 +1,46 @@
+name: Publish Docker Image
+inputs:
+  username:
+    required: true
+    type: string
+  password:
+    required: true
+    type: string
+  tags:
+    required: true
+    type: string
+
+runs:
+  using: "composite"
+  steps:
+
+    - name: Install skopeo and jq
+      shell: bash
+      run: |
+        sudo apt-get update && sudo apt-get install -y skopeo jq
+
+    - name: Push Docker image if digest changed
+      shell: bash
+      run: |
+        echo "${{ inputs.tags }}" | while IFS= read -r tag; do
+          [ -z "$tag" ] && continue
+          echo "Checking image digest for tag: $tag"
+
+          IMAGE_TAR="image-$(echo $tag | tr '/:' '_').tar"
+          echo "Saving image to OCI archive..."
+          docker save "$tag" -o "$IMAGE_TAR"
+
+          BUILT_DIGEST=$(skopeo inspect "docker-archive:$IMAGE_TAR" | jq -r ".Digest" || echo "")
+          EXISTING_DIGEST=$(skopeo inspect "docker://$tag" | jq -r ".Digest" || echo "")
+
+          echo "Image: $tag"
+          echo "Local: $BUILT_DIGEST"
+          echo "Remote: $EXISTING_DIGEST"
+
+          if [ "$BUILT_DIGEST" != "$EXISTING_DIGEST" ]; then
+            echo "Digest mismatch – pushing image for $tag"
+            skopeo copy --preserve-digests --dest-creds "${{ inputs.username }}:${{ inputs.password }}" "docker-archive:$IMAGE_TAR" "docker://$tag"
+          else
+            echo "No changes – skipping push for $tag"
+          fi
+        done
