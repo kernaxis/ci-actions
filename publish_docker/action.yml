@@ -1,46 +1,76 @@
 name: Publish Docker Image
+description: >-
+  Push locally built images with skopeo, skipping tags whose remote digest already matches.
+  Inputs reach the shell only through environment variables, and credentials only through
+  a temporary auth file.
 inputs:
   username:
+    description: Registry username.
     required: true
-    type: string
   password:
+    description: Registry password or token.
     required: true
-    type: string
   tags:
+    description: Newline-separated image references present in the local Docker daemon.
     required: true
-    type: string
 
 runs:
-  using: "composite"
+  using: composite
   steps:
-
-    - name: Install skopeo and jq
+    - name: Ensure skopeo and jq
       shell: bash
       run: |
-        sudo apt-get update && sudo apt-get install -y skopeo jq
+        set -euo pipefail
+        if ! command -v skopeo >/dev/null || ! command -v jq >/dev/null; then
+          sudo apt-get update && sudo apt-get install -y skopeo jq
+        fi
 
     - name: Push Docker image if digest changed
       shell: bash
+      env:
+        REGISTRY_USERNAME: ${{ inputs.username }}
+        REGISTRY_PASSWORD: ${{ inputs.password }}
+        TAGS: ${{ inputs.tags }}
       run: |
-        echo "${{ inputs.tags }}" | while IFS= read -r tag; do
-          [ -z "$tag" ] && continue
-          echo "Checking image digest for tag: $tag"
+        set -euo pipefail
+        workdir=$(mktemp -d "$RUNNER_TEMP/publish-docker.XXXXXX")
+        trap 'rm -rf "$workdir"' EXIT
+        authfile="$workdir/auth.json"
 
-          IMAGE_TAR="image-$(echo $tag | tr '/:' '_').tar"
-          echo "Saving image to OCI archive..."
-          docker save "$tag" -o "$IMAGE_TAR"
-
-          BUILT_DIGEST=$(skopeo inspect "docker-archive:$IMAGE_TAR" | jq -r ".Digest" || echo "")
-          EXISTING_DIGEST=$(skopeo inspect "docker://$tag" | jq -r ".Digest" || echo "")
-
-          echo "Image: $tag"
-          echo "Local: $BUILT_DIGEST"
-          echo "Remote: $EXISTING_DIGEST"
-
-          if [ "$BUILT_DIGEST" != "$EXISTING_DIGEST" ]; then
-            echo "Digest mismatch – pushing image for $tag"
-            skopeo copy --preserve-digests --dest-creds "${{ inputs.username }}:${{ inputs.password }}" "docker-archive:$IMAGE_TAR" "docker://$tag"
+        registry_of() {
+          local first=${1%%/*}
+          if [[ "$1" == */* && ( "$first" == *.* || "$first" == *:* || "$first" == localhost ) ]]; then
+            echo "$first"
           else
-            echo "No changes – skipping push for $tag"
+            echo docker.io
           fi
-        done
+        }
+
+        declare -A logged_in=()
+        while IFS= read -r tag; do
+          tag=${tag//[[:space:]]/}
+          [[ -z "$tag" ]] && continue
+          registry=$(registry_of "$tag")
+          if [[ -z "${logged_in[$registry]:-}" ]]; then
+            printf '%s' "$REGISTRY_PASSWORD" |
+              skopeo login --authfile "$authfile" --username "$REGISTRY_USERNAME" --password-stdin "$registry" >/dev/null
+            logged_in[$registry]=1
+          fi
+
+          echo "Checking image digest for tag: $tag"
+          archive="$workdir/image-$(tr '/:' '__' <<< "$tag").tar"
+          docker save "$tag" -o "$archive"
+
+          built=$(skopeo inspect "docker-archive:$archive" | jq -r '.Digest' || true)
+          existing=$(skopeo inspect --authfile "$authfile" "docker://$tag" 2>/dev/null | jq -r '.Digest' || true)
+          echo "Local:  $built"
+          echo "Remote: ${existing:-<none>}"
+
+          if [[ -n "$built" && "$built" == "$existing" ]]; then
+            echo "No changes - skipping push for $tag"
+          else
+            echo "Digest mismatch - pushing image for $tag"
+            skopeo copy --authfile "$authfile" --preserve-digests "docker-archive:$archive" "docker://$tag"
+          fi
+          rm -f "$archive"
+        done <<< "$TAGS"

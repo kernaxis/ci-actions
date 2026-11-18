@@ -1,0 +1,95 @@
+name: workflow-lint
+description: >-
+  Lint GitHub Actions workflows with actionlint and audit them with zizmor, both at the versions
+  pinned in tools/. actionlint requires Go on PATH (actions/setup-go); zizmor requires python3.
+inputs:
+  actionlint:
+    description: '"true" runs actionlint on .github/workflows.'
+    default: "true"
+  zizmor:
+    description: '"true" runs zizmor.'
+    default: "true"
+  zizmor-paths:
+    description: Space-separated paths audited by zizmor.
+    default: .
+  github-token:
+    description: >-
+      Token enabling zizmor online audits (impostor commits, known vulnerable actions).
+      Empty runs zizmor with --offline.
+    default: ""
+  report:
+    description: >-
+      "true" writes a normalized zizmor report and uploads it as an artifact for security-issues-sync.
+      The step still fails when findings remain.
+    default: "false"
+  artifact-name:
+    description: Artifact name used when report is "true".
+    default: security-report-zizmor
+outputs:
+  report-path:
+    description: Path of the JSON report when report is "true".
+    value: ${{ steps.zizmor.outputs.report-path }}
+runs:
+  using: composite
+  steps:
+    - name: Run pinned actionlint
+      if: inputs.actionlint == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        bin="$RUNNER_TEMP/ci-actions-bin"
+        (cd "$GITHUB_ACTION_PATH/../tools" &&
+          env -u GOOS -u GOARCH -u GOARM -u GOFLAGS GOBIN="$bin" go install github.com/rhysd/actionlint/cmd/actionlint)
+        "$bin/actionlint"
+
+    - name: Install pinned zizmor
+      if: inputs.zizmor == 'true'
+      id: install
+      shell: bash
+      run: |
+        set -euo pipefail
+        venv="$RUNNER_TEMP/ci-actions-zizmor"
+        python3 -m venv "$venv"
+        "$venv/bin/pip" install --disable-pip-version-check --quiet --require-hashes --only-binary :all: --no-deps \
+          -r "$GITHUB_ACTION_PATH/../tools/requirements.txt"
+        echo "path=$venv/bin/zizmor" >> "$GITHUB_OUTPUT"
+
+    - name: Audit workflows with zizmor
+      if: inputs.zizmor == 'true'
+      id: zizmor
+      shell: bash
+      env:
+        ZIZMOR: ${{ steps.install.outputs.path }}
+        ZIZMOR_PATHS: ${{ inputs.zizmor-paths }}
+        REPORT: ${{ inputs.report }}
+        TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        read -ra paths <<< "$ZIZMOR_PATHS"
+        args=()
+        if [[ -n "$TOKEN" ]]; then
+          export GH_TOKEN="$TOKEN"
+        else
+          args+=(--offline)
+        fi
+        if [[ "$REPORT" != true ]]; then
+          exec "$ZIZMOR" "${args[@]}" -- "${paths[@]}"
+        fi
+        raw="$RUNNER_TEMP/zizmor.sarif"
+        report="$RUNNER_TEMP/zizmor-report.json"
+        echo "report-path=$report" >> "$GITHUB_OUTPUT"
+        set +e
+        # Severity exit codes are disabled: 0 means a complete scan, findings come from SARIF.
+        "$ZIZMOR" "${args[@]}" --no-exit-codes --format=sarif -- "${paths[@]}" > "$raw"
+        status=$?
+        set -e
+        python3 -I "$GITHUB_ACTION_PATH/../lib/security_reports.py" zizmor "$raw" "$report" "$status"
+
+    - name: Store report
+      if: always() && inputs.zizmor == 'true' && inputs.report == 'true'
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ runner.temp }}/zizmor-report.json
+        if-no-files-found: ignore
+        retention-days: 1

@@ -1,0 +1,48 @@
+name: security-issues-sync
+description: >-
+  Reconcile bot-owned GitHub issues with the govulncheck and zizmor reports of the current branch head.
+  Downloads the security-report-* artifacts of the run. The job needs issues: write.
+  Scans of a commit that is no longer the branch head leave issues unchanged.
+inputs:
+  github-token:
+    description: Token used for issue operations.
+    default: ${{ github.token }}
+  branch:
+    description: Branch whose head must still match the scanned commit.
+    default: main
+  scanned-sha:
+    description: Commit the reports were produced for.
+    default: ${{ github.sha }}
+  label:
+    description: Label applied to managed issues.
+    default: security
+  bot-login:
+    description: Author of managed issues; issues by anyone else are never modified.
+    default: github-actions[bot]
+  artifact-pattern:
+    description: Artifact pattern holding the reports.
+    default: security-report-*
+runs:
+  using: composite
+  steps:
+    - name: Download reports
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      continue-on-error: true
+      with:
+        pattern: ${{ inputs.artifact-pattern }}
+        path: ${{ runner.temp }}/ci-actions-security-reports
+        merge-multiple: true
+
+    - name: Reconcile finding issues
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        SCANNED_SHA: ${{ inputs.scanned-sha }}
+        SCANNED_BRANCH: ${{ inputs.branch }}
+        ISSUE_LABEL: ${{ inputs.label }}
+        BOT_LOGIN: ${{ inputs.bot-login }}
+      run: |
+        set -euo pipefail
+        export REPORT_DIR="$RUNNER_TEMP/ci-actions-security-reports"
+        mkdir -p "$REPORT_DIR"
+        python3 -I "$GITHUB_ACTION_PATH/../lib/sync_security_issues.py"

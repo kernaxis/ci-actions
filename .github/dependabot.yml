@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Workflows of this repository and every composite action. Add new action directories here.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /govulncheck
+      - /workflow-lint
+      - /security-issues-sync
+      - /publish_docker
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+  # actionlint and govulncheck, declared as Go tool dependencies.
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    allow:
+      - dependency-type: all
+    groups:
+      go-tools:
+        patterns: ["*"]
+  # zizmor, pinned with hashes.
+  - package-ecosystem: pip
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
