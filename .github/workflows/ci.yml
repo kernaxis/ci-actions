@@ -1,0 +1,48 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  scripts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test shared scripts
+        run: python3 -I -m unittest discover -s tests -p 'test_*.py'
+  actions:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: tools/go.mod
+          cache: false
+      - name: Lint this repository with its own action
+        uses: ./workflow-lint # zizmor: ignore[self-repository] -- Tests the action at the commit under review; actionlint does not support the $/ syntax.
+      - name: Smoke-test govulncheck
+        uses: ./govulncheck # zizmor: ignore[self-repository] -- Tests the action at the commit under review; actionlint does not support the $/ syntax.
+        with:
+          working-directory: tests/fixtures/gomodule
+  ci-success:
+    if: always()
+    needs: [scripts, actions]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require all checks
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | python3 -c 'import json,sys; data=json.load(sys.stdin); failed=[k for k,v in data.items() if v["result"] not in ("success", "skipped")]; print("Failed checks:", failed); sys.exit(bool(failed))'
