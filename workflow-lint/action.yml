@@ -10,7 +10,9 @@ inputs:
     description: '"true" runs zizmor.'
     default: "true"
   zizmor-paths:
-    description: Space-separated paths audited by zizmor.
+    description: >-
+      Space-separated paths audited by zizmor. Must be "." when report is "true": finding
+      locations, and therefore issue identities, are only repository-relative from the root.
     default: .
   github-token:
     description: >-
@@ -66,7 +68,9 @@ runs:
       run: |
         set -euo pipefail
         read -ra paths <<< "$ZIZMOR_PATHS"
-        args=()
+        # An unparsable input is otherwise skipped with a warning, and its findings would
+        # silently disappear (and their issues be closed in report mode).
+        args=(--strict-collection)
         if [[ -n "$TOKEN" ]]; then
           export GH_TOKEN="$TOKEN"
         else
@@ -74,6 +78,10 @@ runs:
         fi
         if [[ "$REPORT" != true ]]; then
           exec "$ZIZMOR" "${args[@]}" -- "${paths[@]}"
+        fi
+        if [[ "${paths[*]}" != . ]]; then
+          echo "::error::workflow-lint report mode requires zizmor-paths: ." >&2
+          exit 1
         fi
         raw="$RUNNER_TEMP/zizmor.sarif"
         report="$RUNNER_TEMP/zizmor-report.json"

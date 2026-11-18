@@ -53,6 +53,28 @@ class SecurityReportsTest(unittest.TestCase):
             self.assertEqual([item["key"] for item in findings],
                              ["zizmor/unpinned-uses:.github/workflows/ci.yml"])
 
+    def test_zizmor_accepts_repository_relative_action_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "zizmor.sarif"
+            results = [{"ruleId": "zizmor/template-injection", "message": {"text": "Injection"},
+                        "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}}}]}
+                       for uri in ("custom-action/action.yml", "./other/action.yml", ".github/workflows/ci.yml")]
+            path.write_text(json.dumps({"runs": [{"results": results}]}))
+            self.assertEqual([item["key"] for item in zizmor(path)], [
+                "zizmor/template-injection:.github/workflows/ci.yml",
+                "zizmor/template-injection:custom-action/action.yml",
+                "zizmor/template-injection:other/action.yml",
+            ])
+
+    def test_zizmor_rejects_paths_outside_the_repository(self):
+        for uri in ("/etc/action.yml", "../action.yml", "a/../../action.yml", "file:///x/action.yml", ""):
+            with self.subTest(uri=uri), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "zizmor.sarif"
+                result = {"ruleId": "zizmor/x", "locations": [{"physicalLocation": {"artifactLocation": {"uri": uri}}}]}
+                path.write_text(json.dumps({"runs": [{"results": [result]}]}))
+                with self.assertRaises(ValueError):
+                    zizmor(path)
+
     def test_scan_error_cannot_produce_closing_report(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory) / "scan.sarif"

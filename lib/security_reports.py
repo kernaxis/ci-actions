@@ -63,6 +63,22 @@ def govulncheck(path):
     return results
 
 
+def repository_path(uri):
+    """Return the repository-relative path of a zizmor location.
+
+    Workflow paths keep their historical `.github/...` form, which is part of the
+    issue identity. Other inputs, such as composite actions, must already be
+    repository-relative, which zizmor guarantees when it scans the repository root.
+    """
+    if ".github/" in uri:
+        return uri[uri.index(".github/"):]
+    uri = uri.removeprefix("./")
+    parts = uri.split("/")
+    if not uri or uri.startswith("/") or ":" in uri or any(part in {"", ".", ".."} for part in parts):
+        raise ValueError(f"zizmor finding has an unexpected location: {uri!r}")
+    return uri
+
+
 def zizmor(path):
     report = json.loads(Path(path).read_text())
     runs = report["runs"]
@@ -80,10 +96,7 @@ def zizmor(path):
             if not locations:
                 raise ValueError("zizmor finding has no location")
             for location in locations:
-                uri = location["physicalLocation"]["artifactLocation"]["uri"]
-                uri = uri[uri.index(".github/"):] if ".github/" in uri else uri
-                if not uri.startswith(".github/"):
-                    raise ValueError("zizmor finding is outside .github")
+                uri = repository_path(location["physicalLocation"]["artifactLocation"]["uri"])
                 key = f"{rule}:{uri}"
                 entry = grouped.setdefault(key, {"rule": rule, "file": uri, "messages": set(), "levels": set()})
                 entry["messages"].add(result.get("message", {}).get("text", rule))
